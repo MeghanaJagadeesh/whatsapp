@@ -47,7 +47,7 @@ public class WhatsappController {
 			return whatsappService.sendMessage(file, whatsappId, templateName, language);
 		}
 		if (isArrayProvided) {
-//			return whatsappService.sendMessagewithArray(array, whatsappId, templateName, language);
+			return whatsappService.sendMessagewithArray(array, whatsappId, templateName, language);
 		}
 		return new ResponseEntity<>("Please provide a file or WhatsApp numbers", HttpStatus.BAD_REQUEST);
 

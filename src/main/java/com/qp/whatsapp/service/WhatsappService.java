@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
@@ -26,14 +27,12 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.qp.whatsapp.dao.Whatsappdao;
 import com.qp.whatsapp.dto.WhatsappNumbers;
-
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 
 @Service
 public class WhatsappService {
@@ -104,13 +103,13 @@ public class WhatsappService {
 			String userHome = System.getProperty("user.home");
 			Path downloadsFolder = Paths.get(userHome, "Downloads").toAbsolutePath();
 			String originalFileName = "analytics.xlsx";
-	        Path downloadsPath = downloadsFolder.resolve(originalFileName);
-	        int count = 1;
-	        while (Files.exists(downloadsPath)) {
-	            String newFileName = "analytics(" + count + ").xlsx";
-	            downloadsPath = downloadsFolder.resolve(newFileName);
-	            count++;
-	        }
+			Path downloadsPath = downloadsFolder.resolve(originalFileName);
+			int count = 1;
+			while (Files.exists(downloadsPath)) {
+				String newFileName = "analytics(" + count + ").xlsx";
+				downloadsPath = downloadsFolder.resolve(newFileName);
+				count++;
+			}
 			Path analyticsFilePath = Paths.get("src/main/resources/analytics/analytics.xlsx").toAbsolutePath();
 			Files.copy(analyticsFilePath, downloadsPath, StandardCopyOption.REPLACE_EXISTING);
 			System.out.println("File downloaded to: " + downloadsPath);
@@ -250,6 +249,66 @@ public class WhatsappService {
 			return String.valueOf(cell.getBooleanCellValue());
 		default:
 			return "";
+		}
+	}
+
+	public ResponseEntity<Object> sendMessagewithArray(String[] array, String whatsappId, String templateName,
+			String language) {
+		try {
+			if (array == null || array.length == 0) {
+				return ResponseEntity.badRequest().body("Please enter phone numbers.");
+			}
+
+			List<String[]> analyticsList = new ArrayList<>();
+			WhatsappNumbers whatsapp = whatsappdao.find(whatsappId);
+			for (String phoneNumber : array) {
+				System.out.println(phoneNumber);
+				RestTemplate restTemplate = new RestTemplate();
+				String accessToken = whatsapp.getAccesstoken();
+				HttpHeaders headers = new HttpHeaders();
+				headers.setContentType(MediaType.APPLICATION_JSON);
+				headers.setBearerAuth(accessToken);
+				String requestBody = createMessageBody(phoneNumber, templateName, language);
+				HttpEntity<String> request = new HttpEntity<>(requestBody, headers);
+				System.out.println("before");
+				ResponseEntity<String> response = restTemplate.exchange(
+						"https://graph.facebook.com/v21.0/" + whatsapp.getWhatsappId() + "/messages", HttpMethod.POST,
+						request, String.class);
+				System.out.println("after");
+				// Store analytics in the list
+				String status = (response.getStatusCode() == HttpStatus.OK) ? "Success" : "Failure";
+				String message = (response.getStatusCode() == HttpStatus.OK) ? "" : response.getBody();
+				analyticsList.add(new String[] { phoneNumber, status, message });
+			}
+			File analyticsFile = new File("src/main/resources/analytics/analytics.xlsx");
+			try (Workbook workbook = new XSSFWorkbook(); FileOutputStream fos = new FileOutputStream(analyticsFile)) {
+				Sheet sheet = workbook.createSheet("Analytics");
+				Row headerRow = sheet.createRow(0);
+				headerRow.createCell(0).setCellValue("Phone Number");
+				headerRow.createCell(1).setCellValue("Status");
+				headerRow.createCell(2).setCellValue("Message");
+				int rowIndex = 1;
+				for (String[] analyticsData : analyticsList) {
+					Row row = sheet.createRow(rowIndex++);
+					row.createCell(0).setCellValue(analyticsData[0]);
+					row.createCell(1).setCellValue(analyticsData[1]);
+					row.createCell(2).setCellValue(analyticsData[2]);
+				}
+				workbook.write(fos);
+			} catch (IOException e) {
+				return ResponseEntity.internalServerError()
+						.body("Error generating analytics Excel file: " + e.getMessage());
+			}
+			downloadFile();
+			return ResponseEntity.ok("Messages sent successfully to all phone numbers.");
+		} catch (HttpClientErrorException.Unauthorized e) {
+			System.out.println(e.getMessage());
+			if (e.getStatusCode().is4xxClientError()) {
+				if (e.getMessage().contains("no body") || e.getMessage().contains("Unauthorized")) {
+					return ResponseEntity.internalServerError().body("expired access token ");
+				}
+			}
+			return ResponseEntity.internalServerError().body("Error occured ");
 		}
 	}
 }
