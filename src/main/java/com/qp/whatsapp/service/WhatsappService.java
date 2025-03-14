@@ -5,13 +5,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.DateUtil;
@@ -27,10 +25,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.qp.whatsapp.dao.Whatsappdao;
 import com.qp.whatsapp.dto.WhatsappNumbers;
 
@@ -40,15 +38,16 @@ public class WhatsappService {
 	@Autowired
 	Whatsappdao whatsappdao;
 
+	@Autowired
+	FileUploader fileUploader;
+
 	public void addNumbers(WhatsappNumbers numbers) {
 		whatsappdao.saveWhatsappNumber(numbers);
 	}
 
 	public List<WhatsappNumbers> fetchAllWhatsapp() {
 		List<WhatsappNumbers> list = whatsappdao.fetchAllWhatsapp();
-		if (list.isEmpty())
-			return null;
-		return list;
+		return list.isEmpty() ? null : list;
 	}
 
 	private String createMessageBody(String phoneNumber, String templateName, String language) {
@@ -59,14 +58,11 @@ public class WhatsappService {
 
 	public ResponseEntity<Object> sendMessage(MultipartFile file, String whatsappId, String templateName,
 			String language) {
-
-		// Directory to store the analytics file inside resources folder
-		File analyticsDirectory = new File("src/main/resources/analytics");
+		File analyticsDirectory = new File("analytics");
 		if (!analyticsDirectory.exists()) {
-			analyticsDirectory.mkdirs(); // Create the directory if it does not exist
+			analyticsDirectory.mkdirs();
 		}
 
-		// Use the existing analytics.xlsx file
 		File analyticsFile = new File(analyticsDirectory, "analytics.xlsx");
 
 		try (Workbook workbook = new XSSFWorkbook(); FileOutputStream fos = new FileOutputStream(analyticsFile)) {
@@ -91,33 +87,6 @@ public class WhatsappService {
 		} catch (IOException e) {
 			return ResponseEntity.internalServerError().body("Error processing the file: " + e.getMessage());
 		}
-//        finally {
-//        	System.out.println("download");
-//            downloadFile();
-//        }
-	}
-
-	public void downloadFile() {
-		try {
-			// Path to save the analytics file in the user's Downloads folder
-			String userHome = System.getProperty("user.home");
-			Path downloadsFolder = Paths.get(userHome, "Downloads").toAbsolutePath();
-			String originalFileName = "analytics.xlsx";
-			Path downloadsPath = downloadsFolder.resolve(originalFileName);
-			int count = 1;
-			while (Files.exists(downloadsPath)) {
-				String newFileName = "analytics(" + count + ").xlsx";
-				downloadsPath = downloadsFolder.resolve(newFileName);
-				count++;
-			}
-			Path analyticsFilePath = Paths.get("src/main/resources/analytics/analytics.xlsx").toAbsolutePath();
-			Files.copy(analyticsFilePath, downloadsPath, StandardCopyOption.REPLACE_EXISTING);
-			System.out.println("File downloaded to: " + downloadsPath);
-
-		} catch (IOException e) {
-			e.printStackTrace();
-			System.err.println("Error downloading file: " + e.getMessage());
-		}
 	}
 
 	private ResponseEntity<Object> handleExcelFile(File file, WhatsappNumbers whatsapp, String templateName,
@@ -141,19 +110,28 @@ public class WhatsappService {
 				}
 			}
 
-			// Write to the same analytics file in the resources folder
 			try (FileOutputStream fos = new FileOutputStream(analyticsFile)) {
 				sheet.getWorkbook().write(fos);
 			}
-			downloadFile();
-			return ResponseEntity.ok("Messages sent successfully to all phone numbers.");
+			String fileUrl = fileUploader.handleFileUpload(analyticsFile);
+			Map<String, Object> response = new HashMap<>();
+			response.put("message", "Messages sent successfully");
+			response.put("code", HttpStatus.OK.value());
+			response.put("status", "success");
+			response.put("data", fileUrl);
+			return ResponseEntity.ok(response);
 		} catch (Exception e) {
-			return ResponseEntity.internalServerError().body("Error processing Excel file: " + e.getMessage());
+			Map<String, Object> response = new HashMap<>();
+			response.put("message", "Internal Server Error");
+			response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+			response.put("status", "fail");
+			return ResponseEntity.internalServerError().body(response);
 		}
 	}
 
 	private ResponseEntity<Object> handleCSVFile(File file, WhatsappNumbers whatsapp, String templateName,
 			String language, Sheet sheet, File analyticsFile) {
+		Map<String, Object> response = new HashMap<String, Object>();
 		try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
 			String line;
 			int phoneColumnIndex = findColumnIndex(reader.readLine(), "phone numbers");
@@ -168,34 +146,43 @@ public class WhatsappService {
 				rowIndex = sendWhatsAppMessage(whatsapp, templateName, language, phoneNumber, sheet, rowIndex);
 			}
 
-			// Write to the same analytics file in the resources folder
 			try (FileOutputStream fos = new FileOutputStream(analyticsFile)) {
 				sheet.getWorkbook().write(fos);
 			}
-			downloadFile();
-			return ResponseEntity.ok("Messages sent successfully to all phone numbers.");
+
+			String fileUrl = fileUploader.handleFileUpload(analyticsFile);
+			response.put("message", "Messages sent successfully");
+			response.put("code", HttpStatus.OK.value());
+			response.put("status", "success");
+			response.put("data", fileUrl);
+			return ResponseEntity.ok(response);
 		} catch (Exception e) {
-			return ResponseEntity.internalServerError().body("Error processing CSV file: " + e.getMessage());
+			e.printStackTrace();
+			response.put("message", "Internal Server Error");
+			response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+			response.put("status", "fail");
+			return ResponseEntity.internalServerError().body(response);
 		}
 	}
 
 	private int sendWhatsAppMessage(WhatsappNumbers whatsapp, String templateName, String language, String phoneNumber,
 			Sheet sheet, int rowIndex) {
 		RestTemplate restTemplate = new RestTemplate();
-		String accessToken = whatsapp.getAccesstoken();
-		String whatsappId = whatsapp.getWhatsappId();
 		try {
 			HttpHeaders headers = new HttpHeaders();
 			headers.setContentType(MediaType.APPLICATION_JSON);
-			headers.setBearerAuth(accessToken);
+			headers.setBearerAuth(whatsapp.getAccesstoken());
+
 			String requestBody = createMessageBody(phoneNumber, templateName, language);
-			HttpEntity<String> request = new HttpEntity<>(requestBody, headers);
+			HttpEntity<String> requestEntity = new HttpEntity<>(requestBody, headers);
+
 			ResponseEntity<String> response = restTemplate.exchange(
-					"https://graph.facebook.com/v21.0/" + whatsappId + "/messages", HttpMethod.POST, request,
-					String.class);
+					"https://graph.facebook.com/v21.0/" + whatsapp.getPhoneNumberId() + "/messages", HttpMethod.POST,
+					requestEntity, String.class);
 
 			Row row = sheet.createRow(rowIndex++);
 			row.createCell(0).setCellValue(phoneNumber);
+
 			if (response.getStatusCode() == HttpStatus.OK) {
 				row.createCell(1).setCellValue("Success");
 				row.createCell(2).setCellValue("");
@@ -240,11 +227,8 @@ public class WhatsappService {
 		case STRING:
 			return cell.getStringCellValue();
 		case NUMERIC:
-			if (DateUtil.isCellDateFormatted(cell)) {
-				return cell.getDateCellValue().toString();
-			} else {
-				return String.valueOf((long) cell.getNumericCellValue());
-			}
+			return DateUtil.isCellDateFormatted(cell) ? cell.getDateCellValue().toString()
+					: String.valueOf((long) cell.getNumericCellValue());
 		case BOOLEAN:
 			return String.valueOf(cell.getBooleanCellValue());
 		default:
@@ -254,6 +238,7 @@ public class WhatsappService {
 
 	public ResponseEntity<Object> sendMessagewithArray(String[] array, String whatsappId, String templateName,
 			String language) {
+		Map<String, Object> responsedata = new HashMap<String, Object>();
 		try {
 			if (array == null || array.length == 0) {
 				return ResponseEntity.badRequest().body("Please enter phone numbers.");
@@ -272,15 +257,20 @@ public class WhatsappService {
 				HttpEntity<String> request = new HttpEntity<>(requestBody, headers);
 				System.out.println("before");
 				ResponseEntity<String> response = restTemplate.exchange(
-						"https://graph.facebook.com/v21.0/" + whatsapp.getWhatsappId() + "/messages", HttpMethod.POST,
-						request, String.class);
+						"https://graph.facebook.com/v21.0/" + whatsapp.getPhoneNumberId() + "/messages",
+						HttpMethod.POST, request, String.class);
 				System.out.println("after");
-				// Store analytics in the list
 				String status = (response.getStatusCode() == HttpStatus.OK) ? "Success" : "Failure";
 				String message = (response.getStatusCode() == HttpStatus.OK) ? "" : response.getBody();
 				analyticsList.add(new String[] { phoneNumber, status, message });
 			}
-			File analyticsFile = new File("src/main/resources/analytics/analytics.xlsx");
+
+			File analyticsDirectory = new File("analytics");
+			if (!analyticsDirectory.exists()) {
+				analyticsDirectory.mkdirs();
+			}
+			File analyticsFile = new File(analyticsDirectory, "analytics.xlsx");
+
 			try (Workbook workbook = new XSSFWorkbook(); FileOutputStream fos = new FileOutputStream(analyticsFile)) {
 				Sheet sheet = workbook.createSheet("Analytics");
 				Row headerRow = sheet.createRow(0);
@@ -299,16 +289,46 @@ public class WhatsappService {
 				return ResponseEntity.internalServerError()
 						.body("Error generating analytics Excel file: " + e.getMessage());
 			}
-			downloadFile();
-			return ResponseEntity.ok("Messages sent successfully to all phone numbers.");
-		} catch (HttpClientErrorException.Unauthorized e) {
-			System.out.println(e.getMessage());
-			if (e.getStatusCode().is4xxClientError()) {
-				if (e.getMessage().contains("no body") || e.getMessage().contains("Unauthorized")) {
-					return ResponseEntity.internalServerError().body("expired access token ");
-				}
-			}
-			return ResponseEntity.internalServerError().body("Error occured ");
+			String fileUrl = fileUploader.handleFileUpload(analyticsFile);
+
+			responsedata.put("message", "Messages sent successfully");
+			responsedata.put("code", HttpStatus.OK.value());
+			responsedata.put("status", "success");
+			responsedata.put("data", fileUrl);
+			return ResponseEntity.ok(responsedata);
+		} catch (Exception e) {
+			responsedata.put("message", e.getMessage());
+			responsedata.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+			responsedata.put("status", "fail");
+			return ResponseEntity.internalServerError().body(responsedata);
+		}
+	}
+
+	public ResponseEntity<Map<String, Object>> getTemplates(String whatsappId) {
+		Map<String, Object> map = new HashMap<>();
+		try {
+			WhatsappNumbers whatsapp = whatsappdao.find(whatsappId);
+
+			RestTemplate restTemplate = new RestTemplate();
+			HttpHeaders headers = new HttpHeaders();
+			headers.setBearerAuth(whatsapp.getAccesstoken());
+
+			String apiurl = "https://graph.facebook.com/v21.0/" + whatsapp.getWhatsappId()
+					+ "/message_templates?fields=name,status,language";
+			HttpEntity<String> requestEntity = new HttpEntity<>(headers);
+
+			ResponseEntity<JsonNode> response = restTemplate.exchange(apiurl, HttpMethod.GET, requestEntity,
+					JsonNode.class);
+
+			map.put("code", HttpStatus.OK.value());
+			map.put("status", "success");
+			map.put("data", response.getBody());
+			return ResponseEntity.ok(map);
+		} catch (Exception e) {
+			map.put("message", e.getMessage());
+			map.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+			map.put("status", "fail");
+			return ResponseEntity.internalServerError().body(map);
 		}
 	}
 }

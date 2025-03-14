@@ -16,5 +16,6 @@ public class WhatsappNumbers {
 	private String whatsappName;
 	private String whatsappId;
 	private String accesstoken;
+	private String phoneNumberId;
 	
 }
